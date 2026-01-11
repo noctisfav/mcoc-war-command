@@ -12,174 +12,153 @@ export default function Home() {
   const [allMembers, setAllMembers] = useState([]);
   const [userRole, setUserRole] = useState('member');
 
-  // YOUR EMAIL IS THE PERMANENT LEADER
   const LEADER_EMAIL = "noctisfav1@gmail.com";
 
   useEffect(() => {
     if (!user) return;
-    checkRoleAndFetchData();
+    syncUserAndFetchData();
   }, [user]);
 
-  const checkRoleAndFetchData = async () => {
-    // 1. Get my role
-    let { data: profile } = await supabase
+  const syncUserAndFetchData = async () => {
+    // 1. AUTO-SYNC: Add user to Supabase profiles if they don't exist
+    const { data: existingProfile } = await supabase
       .from('profiles')
-      .select('role')
+      .select('*')
       .eq('id', user.id)
       .single();
 
-    // Auto-set Leader if email matches
-    if (user.primaryEmailAddress?.emailAddress === LEADER_EMAIL) {
-      setUserRole('leader');
-    } else if (profile) {
-      setUserRole(profile.role);
+    if (!existingProfile) {
+      await supabase.from('profiles').insert([{
+        id: user.id,
+        email: user.primaryEmailAddress?.emailAddress,
+        username: user.username || user.firstName || "Unknown Soldier",
+        role: user.primaryEmailAddress?.emailAddress === LEADER_EMAIL ? 'leader' : 'member'
+      }]);
     }
 
-    // 2. Get my assignment
-    const { data: assign } = await supabase
-      .from('assignments')
-      .select('*')
-      .eq('user_id', user.id)
-      .single();
+    // 2. Set Local Role state
+    if (user.primaryEmailAddress?.emailAddress === LEADER_EMAIL) {
+      setUserRole('leader');
+    } else if (existingProfile) {
+      setUserRole(existingProfile.role);
+    }
+
+    // 3. Get Assignments
+    const { data: assign } = await supabase.from('assignments').select('*').eq('user_id', user.id).single();
     if (assign) setMyAssignment(assign);
 
-    // 3. If Leader or Officer, fetch member list for management
-    if (user.primaryEmailAddress?.emailAddress === LEADER_EMAIL || profile?.role === 'officer') {
-      const { data: members } = await supabase.from('profiles').select('*');
+    // 4. Load Roster for Management
+    if (userRole === 'leader' || userRole === 'officer' || user.primaryEmailAddress?.emailAddress === LEADER_EMAIL) {
+      const { data: members } = await supabase.from('profiles').select('*').order('role', { ascending: false });
       setAllMembers(members || []);
     }
   };
 
   const handleAssign = async () => {
+    if (!targetId) return alert("Select a member first");
     const { error } = await supabase
       .from('assignments')
       .upsert([{ user_id: targetId, node_number: nodeNum, path_number: pathNum }], { onConflict: 'user_id' });
     
     if (error) alert("Error: " + error.message);
-    else { alert("Assignment saved."); checkRoleAndFetchData(); }
+    else alert("Assignment deployed to neural network.");
   };
 
   const updateRole = async (uid, newRole) => {
-    if (userRole !== 'leader') return alert("Only the Leader can change roles.");
     const { error } = await supabase.from('profiles').update({ role: newRole }).eq('id', uid);
-    if (!error) checkRoleAndFetchData();
+    if (!error) syncUserAndFetchData();
   };
 
-  const kickMember = async (targetMember) => {
-    // Logic: Leader can kick anyone. Officer can only kick members.
-    if (userRole === 'officer' && (targetMember.role === 'officer' || targetMember.role === 'leader')) {
-      return alert("Officers cannot kick other Officers or the Leader.");
-    }
-
-    const confirmKick = confirm(`Are you sure you want to kick ${targetMember.username || 'this user'}?`);
-    if (confirmKick) {
-      const { error } = await supabase.from('profiles').delete().eq('id', targetMember.id);
-      await supabase.from('assignments').delete().eq('user_id', targetMember.id);
-      if (!error) checkRoleAndFetchData();
+  const kickMember = async (m) => {
+    if (confirm(`Exile ${m.username} from the alliance?`)) {
+      await supabase.from('profiles').delete().eq('id', m.id);
+      await supabase.from('assignments').delete().eq('user_id', m.id);
+      syncUserAndFetchData();
     }
   };
-
-  const isManagement = userRole === 'leader' || userRole === 'officer';
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white font-sans">
-      <nav className="p-4 bg-slate-800 border-b border-slate-700 flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-black text-yellow-500 tracking-tighter italic">WAR COMMAND</h1>
-          {user && <span className="bg-slate-700 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest text-cyan-400">{userRole}</span>}
+    <div className="min-h-screen bg-[#020617] text-white font-sans selection:bg-cyan-500/30">
+      <nav className="p-4 bg-[#020b1a] border-b border-white/5 flex justify-between items-center shadow-2xl">
+        <div className="flex items-center gap-3">
+          <h1 className="text-xl font-black italic tracking-tighter text-yellow-500">WAR COMMAND</h1>
+          <span className="bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded text-[10px] font-bold text-cyan-400 uppercase">{userRole}</span>
         </div>
-        <SignedIn><UserButton showName /></SignedIn>
-        <SignedOut><div className="bg-blue-600 px-4 py-2 rounded font-bold cursor-pointer"><SignInButton mode="modal" /></div></SignedOut>
+        <SignedIn><UserButton afterSignOutUrl="/" /></SignedIn>
       </nav>
 
-      <main className="p-8 max-w-6xl mx-auto">
+      <main className="p-8 max-w-5xl mx-auto space-y-8">
         <SignedIn>
-          {/* ASSIGNMENT SECTION */}
-          {isManagement && (
-            <div className="bg-slate-800 p-6 rounded-xl border border-blue-500/30 mb-8">
-              <h2 className="text-xl font-bold text-blue-400 mb-4 uppercase tracking-tighter">Assign Path</h2>
-              <div className="flex flex-wrap gap-4">
+          {/* OFFICER/LEADER PANEL */}
+          {(userRole === 'leader' || userRole === 'officer') && (
+            <section className="bg-[#020b1a] p-6 rounded-xl border border-blue-500/20 shadow-xl">
+              <h2 className="text-blue-400 font-bold text-xs uppercase tracking-[0.2em] mb-4">Assign Path</h2>
+              <div className="flex flex-col md:flex-row gap-4">
                 <select 
-                  className="bg-slate-900 border border-slate-700 p-2 rounded flex-1 min-w-[200px]"
+                  className="bg-black/40 border border-white/10 p-3 rounded-lg flex-1 outline-none focus:border-blue-500"
                   onChange={(e) => setTargetId(e.target.value)}
                 >
                   <option value="">Select a Member</option>
-                  {allMembers.map(m => <option key={m.id} value={m.id}>{m.username || m.email}</option>)}
+                  {allMembers.map(m => <option key={m.id} value={m.id}>{m.username}</option>)}
                 </select>
-                <input className="bg-slate-900 border border-slate-700 p-2 rounded w-24" placeholder="Path #" onChange={(e) => setPathNum(e.target.value)} />
-                <input className="bg-slate-900 border border-slate-700 p-2 rounded w-24" placeholder="Node #" onChange={(e) => setNodeNum(e.target.value)} />
-                <button onClick={handleAssign} className="bg-blue-600 px-6 py-2 rounded font-black uppercase text-sm">Deploy</button>
+                <input className="bg-black/40 border border-white/10 p-3 rounded-lg w-28 text-center" placeholder="Path #" onChange={(e) => setPathNum(e.target.value)} />
+                <input className="bg-black/40 border border-white/10 p-3 rounded-lg w-28 text-center" placeholder="Node #" onChange={(e) => setNodeNum(e.target.value)} />
+                <button onClick={handleAssign} className="bg-blue-600 hover:bg-blue-500 px-8 py-3 rounded-lg font-black uppercase text-xs tracking-widest transition-all">Deploy</button>
               </div>
-            </div>
+            </section>
           )}
 
-          {/* PERSONAL ASSIGNMENT CARD */}
-          <div className="bg-slate-800 p-8 rounded-xl border-l-8 border-cyan-500 shadow-2xl mb-8">
-            <h2 className="text-cyan-400 font-bold text-xs uppercase tracking-[0.3em]">Your Current Assignment</h2>
-            {myAssignment ? (
-              <div className="mt-4 flex items-end gap-6">
-                <div>
-                  <p className="text-gray-500 text-[10px] font-bold uppercase tracking-widest">Sector</p>
-                  <p className="text-7xl font-black italic">{myAssignment.path_number}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500 text-[10px] font-bold uppercase tracking-widest">Node</p>
-                  <p className="text-7xl font-black italic text-cyan-400">{myAssignment.node_number}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-2xl font-bold mt-4 text-slate-500 italic uppercase tracking-tighter">Awaiting Orders...</p>
-            )}
-          </div>
+          {/* MY ASSIGNMENT */}
+          <section className="bg-[#020b1a] p-10 rounded-xl border-l-4 border-cyan-500 shadow-2xl relative overflow-hidden">
+             <div className="absolute top-0 right-0 p-4 opacity-5 text-[40px] font-black">TACTICAL</div>
+             <h2 className="text-cyan-400 font-bold text-[10px] uppercase tracking-[0.4em] mb-6">Current Assignment</h2>
+             {myAssignment ? (
+               <div className="flex gap-12 items-end">
+                 <div><p className="text-slate-500 text-[10px] uppercase font-bold mb-1">Sector</p><p className="text-7xl font-black">{myAssignment.path_number}</p></div>
+                 <div><p className="text-slate-500 text-[10px] uppercase font-bold mb-1">Target Node</p><p className="text-7xl font-black text-cyan-400">{myAssignment.node_number}</p></div>
+               </div>
+             ) : (
+               <p className="text-3xl font-black italic text-slate-700">AWAITING ORDERS...</p>
+             )}
+          </section>
 
-          {/* MEMBER MANAGEMENT TABLE (Leader & Officer only) */}
-          {isManagement && (
-            <div className="bg-slate-800 rounded-xl overflow-hidden border border-slate-700">
-              <div className="p-4 bg-slate-700/50 font-bold text-xs uppercase tracking-widest">Roster Management</div>
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-700 text-slate-400 uppercase text-[10px]">
-                    <th className="p-4">Member</th>
-                    <th className="p-4">Role</th>
-                    <th className="p-4 text-right">Actions</th>
-                  </tr>
+          {/* ROSTER MANAGEMENT */}
+          {(userRole === 'leader' || userRole === 'officer') && (
+            <section className="bg-[#020b1a] rounded-xl border border-white/5 overflow-hidden shadow-xl">
+              <div className="p-4 bg-white/5 border-b border-white/5 font-bold text-[10px] uppercase tracking-widest text-slate-400">Alliance Roster</div>
+              <table className="w-full text-left">
+                <thead className="text-[10px] uppercase text-slate-500 border-b border-white/5">
+                  <tr><th className="p-4">Member</th><th className="p-4">Role</th><th className="p-4 text-right">Actions</th></tr>
                 </thead>
-                <tbody>
-                  {allMembers.map((m) => (
-                    <tr key={m.id} className="border-b border-slate-700 hover:bg-slate-700/30">
-                      <td className="p-4 font-bold">{m.username || m.email}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${m.role === 'leader' ? 'text-yellow-500' : m.role === 'officer' ? 'text-red-400' : 'text-slate-400'}`}>
-                          {m.role}
-                        </span>
-                      </td>
-                      <td className="p-4 text-right flex justify-end gap-2">
+                <tbody className="text-sm">
+                  {allMembers.map(m => (
+                    <tr key={m.id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                      <td className="p-4 font-bold">{m.username}</td>
+                      <td className="p-4"><span className={`text-[10px] font-bold uppercase ${m.role === 'leader' ? 'text-yellow-500' : 'text-slate-400'}`}>{m.role}</span></td>
+                      <td className="p-4 text-right space-x-2">
                         {userRole === 'leader' && m.role !== 'leader' && (
-                          <>
-                            {m.role === 'member' ? (
-                              <button onClick={() => updateRole(m.id, 'officer')} className="text-[10px] bg-slate-700 px-2 py-1 rounded font-bold hover:bg-blue-600">PROMOTE</button>
-                            ) : (
-                              <button onClick={() => updateRole(m.id, 'member')} className="text-[10px] bg-slate-700 px-2 py-1 rounded font-bold hover:bg-orange-600">DEMOTE</button>
-                            )}
-                          </>
+                          <button onClick={() => updateRole(m.id, m.role === 'member' ? 'officer' : 'member')} className="bg-white/5 px-3 py-1 rounded text-[10px] font-bold hover:bg-white/10 uppercase">
+                            {m.role === 'member' ? 'Promote' : 'Demote'}
+                          </button>
                         )}
-                        {/* Kicking Logic */}
                         {(userRole === 'leader' && m.role !== 'leader') || (userRole === 'officer' && m.role === 'member') ? (
-                          <button onClick={() => kickMember(m)} className="text-[10px] bg-red-900/50 text-red-400 px-2 py-1 rounded font-bold hover:bg-red-600 hover:text-white">KICK</button>
+                          <button onClick={() => kickMember(m)} className="bg-red-500/10 text-red-500 px-3 py-1 rounded text-[10px] font-bold hover:bg-red-500 hover:text-white uppercase">Kick</button>
                         ) : null}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
+            </section>
           )}
         </SignedIn>
 
         <SignedOut>
-          <div className="text-center mt-32">
-            <h2 className="text-8xl font-black mb-4 tracking-tighter italic text-slate-800">FORGE.</h2>
-            <p className="text-slate-500 text-xl tracking-widest uppercase font-bold">Identity Verification Required</p>
+          <div className="text-center py-20 space-y-6">
+            <h2 className="text-8xl font-black tracking-tighter italic text-white/5">COMMAND</h2>
+            <div className="inline-block bg-blue-600 px-10 py-4 rounded-full font-bold cursor-pointer hover:scale-105 transition-transform">
+              <SignInButton mode="modal">IDENTITY SYNC</SignInButton>
+            </div>
           </div>
         </SignedOut>
       </main>
